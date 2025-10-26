@@ -1,67 +1,162 @@
+#include <BLEMIDI_Transport.h>
+#include <hardware/BLEMIDI_ESP32.h>
 #include "Wire.h"  // Faz a comunicação I2C
 #include <MPU6050_light.h>
 #include "MPU6050_data.h"
-#include <BLEMIDI_Transport.h>
-#include <hardware/BLEMIDI_ESP32.h>
-#include <map>
-#include <string.h>
 
 BLEMIDI_CREATE_DEFAULT_INSTANCE()
 
-#define SUBIR_OITAVA 12 // Precisa somar 12 para tocar a mesma nota uma oitava acima
+//pinos dos botões para as notas básicas:
+const int btnPin1 = 27; // Dó
+const int btnPin2 = 26; // Ré
+const int btnPin3 = 25; // Mi
+const int btnPin4 = 33; // Fá
 
-int sustenido = 1;  // Precisa somar 1 para tocar o sustenido da respectiva nota
-MPU6050 mpu(Wire);  // Cria um objeto MPU6050 com o parâmetro Wire (comunicação I2C)
-std::map<string, int> notes;
+//estados dos botões
+int btnState1;
+int btnState2;
+int btnState3;
+int btnState4;
+
+//---------------------------------------------------//
+
+unsigned long lastChangeTime = 0; // Quando o estado "cru" mudou pela última vez
+const long DEBOUNCE_DELAY = 20;   // 20ms para estabilizar
+int notaTocandoAgora = 0;         // A nota que está ativamente tocando via MIDI
+int lastRawNote = 0;           // A última leitura "crua" dos botões
+int notaEstavel = 0;              // A nota que está estável (depois do debounce)
+
+//---------------------------------------------------//
+
+//valores das notas (parâmetros para a função sendNote())
+
+const int Do = 60;
+const int Re = 62;
+const int Mi = 64;
+const int Fa = 65;
+const int Sol = 67;
+const int La = 69;
+const int Si = 71;
+
+//booleano para detectar conexão/desconexão
+
 bool isConnected = false;
 
-// Denifição das notas base
-void creatNotes() {
-  notes["C1"] = 24;  // Dó
-  notes["D1"] = 26;  // Ré
-  notes["E1"] = 28;  // Mi
-  notes["F1"] = 29;  // Fá
-  notes["G1"] = 31; // Sol
-  notes["A1"] = 33; // Lá
-  notes["B1"] = 35; // Si
-}
+MPU6050 mpu(Wire);
+int subirOitava = 0;
+int sustenido = 0;
 
-// enum das oitavas, que podem servir de multiplicador do valor a ser somado (tirei o C0 por isso)
-enum Oitavas {
-  C1, // 0
-  C2, // 1
-  C3, // 2
-  C4, // 3
-  C5, // 4
-  C6, // 5
-  C7, // 6
-  C8, // 7
-  C9  // 8
-}
-// Exemplo: Oitavas minhaOitava = C4; (minhaOitava = 3)
+void setup()
+{
+  Serial.begin(115200);
+  pinMode(btnPin1, INPUT_PULLUP);
+  pinMode(btnPin2, INPUT_PULLUP);
+  pinMode(btnPin3, INPUT_PULLUP);
+  pinMode(btnPin4, INPUT_PULLUP);
 
-void setup() {
-  Serial.begin(9600);  // Inicia a comunicação serial com o computador (9600 é a velocidade)
-  
-  createNotes();
+  //inicia para fazer conexão:
 
-  // Inicialização do MIDI
   MIDI.begin();
+
+  //para quando o esp32 se conecta via bluetooth com sucesso...:
+
   BLEMIDI.setHandleConnected([]() {
     isConnected = true;
   });
+
+  // e para quando se desconecta...:
+
   BLEMIDI.setHandleDisconnected([]() {
     isConnected = false;
   });
 
-  // Inicialização do MPU
-  mpu_setCommunication();
-  mpu_calibration();
+  //Os dois eventos abaixo são para leitura de notas que são tocadas pelo usuário...
+
+  MIDI.setHandleNoteOn([](byte channel, byte note, byte velocity) {
+    
+  });
+  MIDI.setHandleNoteOff([](byte channel, byte note, byte velocity) {
+    
+  });
 }
 
-void loop() {
-  MIDI.read();
-  if (isConnected) {
+// ******************************************************************************************************* //
+
+void loop()
+{
+  if (isConnected)
+  {
+    btnState1 = digitalRead(btnPin1);
+    btnState2 = digitalRead(btnPin2);
+    btnState3 = digitalRead(btnPin3);
+    btnState4 = digitalRead(btnPin4);
     mpu_read();
+
+    int rawNote = 0; // Nota "crua" lida neste exato ciclo. 0 = silêncio
+
+    if (btnState1 == 0 && btnState2 == 0)
+      rawNote = Sol + 12*subirOitava + sustenido;
+
+    else if (btnState2 == 0 && btnState3 == 0)
+      rawNote = La + 12*subirOitava + sustenido;
+
+    else if (btnState3 == 0 && btnState4 == 0)
+    {
+      rawNote = Si + 12*subirOitava + sustenido;
+    }
+
+    else if (btnState1 == 0)
+      rawNote = Do + 12*subirOitava + sustenido;
+
+    else if (btnState2 == 0)
+      rawNote = Re + 12*subirOitava + sustenido;
+
+    else if (btnState3 == 0)
+      rawNote = Mi + 12*subirOitava + sustenido;
+
+    else if (btnState4 == 0)
+      rawNote = Fa + 12*subirOitava + sustenido;
+
+
+    // -> lógica do debounce:
+
+    // verifica se a leitura "crua" mudou desde a última vez
+    if (rawNote != lastRawNote) {
+      lastChangeTime = millis(); //zera o cronômetro do debounce...
+    }
+    lastRawNote = rawNote; // Salve a leitura atual
+
+    // verifica se passaram (20ms) desde a última mudança
+    if ((millis() - lastChangeTime) > DEBOUNCE_DELAY)
+    {
+      notaEstavel = rawNote; //só definimos a nota que vamos tocar se ela ficar mais de 20ms acionada
+
+      if (notaTocandoAgora != notaEstavel)
+      {
+        if (notaTocandoAgora != 0)
+          MIDI.sendNoteOff(notaTocandoAgora, 0, 1);
+
+        if (notaEstavel != 0)
+          MIDI.sendNoteOn(notaEstavel, 100, 1);
+        
+        notaTocandoAgora = notaEstavel;
+      }
+    }
+    
+  }
+
+  else // se desconectado
+  {
+    Serial.println("Desconectado.");
+
+    // garantindo que qualquer nota tocando seja interrompida
+    if (notaTocandoAgora != 0) { // Use notaTocandoAgora
+      MIDI.sendNoteOff(notaTocandoAgora, 0, 1);
+      notaTocandoAgora = 0;
+    }
+    
+    // Resete os estados de debounce também
+    lastRawNote = 0;
+    notaEstavel = 0;
   }
 }
