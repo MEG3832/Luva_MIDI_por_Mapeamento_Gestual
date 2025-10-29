@@ -1,5 +1,7 @@
 #include <BLEMIDI_Transport.h>
 #include <hardware/BLEMIDI_ESP32.h>
+#include "Wire.h"  // Faz a comunicação I2C
+#include <MPU6050_light.h>
 
 BLEMIDI_CREATE_DEFAULT_INSTANCE()
 
@@ -41,8 +43,13 @@ const int Si = 71;
 
 //booleano para detectar conexão/desconexão
 
+MPU6050 mpu(Wire);
+int subirOitava = 0;
+int sustenido = 0;
+
 bool isConnected = false;
 
+const float G_TO_MS2 = 9.80665; // Conersão de g para m/s²
 
 void setup()
 {
@@ -57,6 +64,22 @@ void setup()
   MIDI.begin();
 
   //para quando o esp32 se conecta via bluetooth com sucesso...:
+
+  // Comunicação
+  Wire.begin();  
+  byte status = mpu.begin();  // Inicia o sensor
+  Serial.print(F("MPU6050 status: "));
+  Serial.println(status);  // Status 0 indica que o sensor foi encontrado
+  Serial.println("Falha ao iniciar o MPU6050. Verifique as conexões e reinicie.");
+  while(status!=0){} // Entra em um loop infinito atÃ© que o sensor seja encontrado
+
+  // Calibração
+  Serial.println(F("Calibrando, nao mova o mpu"));
+  delay(1000);
+  mpu.calcOffsets(true,true); // giroscÃ³pio and acelerÃ´metro
+  Serial.println("Done!\n");
+  mpu.setAccConfig(2);
+  Serial.println("Faixa do acelerômetro configurada para +/- 8g");
 
   BLEMIDI.setHandleConnected([]() {
     isConnected = true;
@@ -84,6 +107,30 @@ void loop()
 {
   if (isConnected)
   {
+    // mpu
+    mpu.update();  // Le os dados mais recentes do sensor e os armazena dentro de mpu
+
+    // Leitura dos dados específicos
+    float AccX = mpu.getAccX() * G_TO_MS2;
+    float AngleX = mpu.getAngleX();
+
+    // mudança da oitava pelo angulo
+    if(AngleX > 5) {
+      subirOitava = 1;
+    }
+    else {
+      subirOitava = 0;
+    }
+
+    // Toca sustenido quando ha uma movimentacao em x
+    if(AccX > 2 || AccX < -2) {
+      sustenido = 1;
+    }
+    else {
+      sustenido = 0;
+    }
+
+    // Botão
     btnState1 = digitalRead(btnPin1);
     btnState2 = digitalRead(btnPin2);
     btnState3 = digitalRead(btnPin3);
@@ -92,27 +139,27 @@ void loop()
     int rawNote = 0; // Nota "crua" lida neste exato ciclo. 0 = silêncio
 
     if (btnState1 == 0 && btnState2 == 0)
-      rawNote = Sol;
+      rawNote = Sol + 12*subirOitava + sustenido;
 
     else if (btnState2 == 0 && btnState3 == 0)
-      rawNote = La;
+      rawNote = La + 12*subirOitava + sustenido;
 
     else if (btnState3 == 0 && btnState4 == 0)
     {
-      rawNote = Si;
+      rawNote = Si + 12*subirOitava + sustenido;
     }
 
     else if (btnState1 == 0)
-      rawNote = Do;
+      rawNote = Do + 12*subirOitava + sustenido;
 
     else if (btnState2 == 0)
-      rawNote = Re;
+      rawNote = Re + 12*subirOitava + sustenido;
 
     else if (btnState3 == 0)
-      rawNote = Mi;
+      rawNote = Mi + 12*subirOitava + sustenido;
 
     else if (btnState4 == 0)
-      rawNote = Fa;
+      rawNote = Fa + 12*subirOitava + sustenido;
 
 
     // -> lógica do debounce:
@@ -144,7 +191,7 @@ void loop()
 
   else // se desconectado
   {
-    Serial.println("Desconectado.");
+    //Serial.println("Desconectado.");
 
     // garantindo que qualquer nota tocando seja interrompida
     if (notaTocandoAgora != 0) { // Use notaTocandoAgora
